@@ -1,0 +1,27 @@
+<svg xmlns="http://www.w3.org/2000/svg" width="1024" height="1024" viewBox="0 0 1024 1024">
+  <defs>
+    <linearGradient id="background" x1="120" y1="80" x2="900" y2="960" gradientUnits="userSpaceOnUse">
+      <stop stop-color="#172B52"/>
+      <stop offset="1" stop-color="#101525"/>
+    </linearGradient>
+    <linearGradient id="left-thread" x1="230" y1="245" x2="580" y2="820" gradientUnits="userSpaceOnUse">
+      <stop stop-color="#7DE4D3"/>
+      <stop offset="1" stop-color="#31AFAF"/>
+    </linearGradient>
+    <linearGradient id="right-thread" x1="790" y1="235" x2="430" y2="825" gradientUnits="userSpaceOnUse">
+      <stop stop-color="#FFD98B"/>
+      <stop offset="1" stop-color="#F0A84D"/>
+    </linearGradient>
+    <filter id="shadow" x="100" y="130" width="824" height="780" color-interpolation-filters="sRGB" filterUnits="userSpaceOnUse">
+      <feGaussianBlur stdDeviation="18"/>
+    </filter>
+  </defs>
+  <rect x="32" y="32" width="960" height="960" rx="224" fill="url(#background)"/>
+  <path d="M202 267C293 176 430 183 512 269L716 483C785 555 781 672 707 742C633 812 516 811 443 741L302 607"
+        fill="none" stroke="#070D1A" stroke-linecap="round" stroke-linejoin="round" stroke-width="98" filter="url(#shadow)" opacity=".55"/>
+  <path d="M202 267C293 176 430 183 512 269L716 483C785 555 781 672 707 742C633 812 516 811 443 741L302 607"
+        fill="none" stroke="url(#left-thread)" stroke-linecap="round" stroke-linejoin="round" stroke-width="70"/>
+  <path d="M822 267C731 176 594 183 512 269L308 483C239 555 243 672 317 742C391 812 508 811 581 741L722 607"
+        fill="none" stroke="url(#right-thread)" stroke-linecap="round" stroke-linejoin="round" stroke-width="70"/>
+  <circle cx="512" cy="512" r="13" fill="#FFF2D6" opacity=".9"/>
+</svg>

@@ -1,35 +1,76 @@
+mod drawer;
+
+use std::error::Error;
+use std::fs;
+use std::io;
+use std::path::{Path, PathBuf};
+use std::sync::Arc;
 use std::time::Duration;
 
-use iced::widget::{center, column};
-use iced::{Element, Size, Subscription, Task, time, window};
+use iced::widget::{button, center, column, container, mouse_area, row, text};
+use iced::{Element, Length, Size, Subscription, Task, time, window};
 use tray_icon::{Icon, MouseButton, MouseButtonState, TrayIcon, TrayIconBuilder, TrayIconEvent};
 
-pub fn main() -> iced::Result {
-    iced::application(Closet::new, Closet::update, Closet::view)
-        .title("")
-        .window_size(Size::new(300.0, 500.0))
-        .exit_on_close_request(false)
-        .subscription(Closet::subscription)
-        .run()
+pub fn main() -> Result<(), Box<dyn Error>> {
+    let drawers: Arc<[drawer::Drawer]> = load_drawers()?.into();
+
+    iced::application(
+        move || Closet::new(Arc::clone(&drawers)),
+        Closet::update,
+        Closet::view,
+    )
+    .title("Tie")
+    .window_size(Size::new(300.0, 500.0))
+    .decorations(false)
+    .exit_on_close_request(false)
+    .subscription(Closet::subscription)
+    .run()?;
+
+    Ok(())
 }
 
-#[derive(Default)]
 struct Closet {
     window_id: Option<window::Id>,
     tray_icon: Option<TrayIcon>,
     window_hidden: bool,
+    window_pinned: bool,
+    drawers: Arc<[drawer::Drawer]>,
+    balances: Option<Vec<drawer::AccountBalance>>,
+    balance_error: Option<String>,
+    balance_loading: bool,
+    asset_valuations: Option<Vec<drawer::AssetValuation>>,
+    valuation_error: Option<String>,
+    valuation_loading: bool,
 }
 
-#[derive(Debug, Clone, Copy)]
+#[derive(Debug, Clone)]
 enum Message {
     WindowOpened(window::Id),
     CloseRequested(window::Id),
     PollTray,
+    RefreshAccountData,
+    DragWindow,
+    HideWindow,
+    TogglePin,
+    BalanceLoaded(Result<Vec<drawer::AccountBalance>, String>),
+    ValuationLoaded(Result<Vec<drawer::AssetValuation>, String>),
 }
 
 impl Closet {
-    fn new() -> Self {
-        Closet::default()
+    fn new(drawers: Arc<[drawer::Drawer]>) -> Self {
+        Self {
+            window_id: None,
+            tray_icon: None,
+            window_hidden: false,
+            window_pinned: false,
+            drawers,
+            balances: None,
+            balance_error: None,
+            balance_loading: false,
+            asset_valuations: None,
+            valuation_error: None,
+            valuation_loading: false,
+        }
     }
 
     fn update(&mut self, message: Message) -> Task<Message> {
@@ -49,13 +90,15 @@ impl Closet {
                     }
                 }
 
-                Task::none()
+                self.refresh_account_data()
             }
-            Message::CloseRequested(id) if Some(id) == self.window_id => {
-                self.window_hidden = true;
-                window::set_mode(id, window::Mode::Hidden)
-            }
+            Message::CloseRequested(id) if Some(id) == self.window_id => self.hide_window(id),
             Message::CloseRequested(_) => Task::none(),
+            Message::DragWindow => self.window_id.map_or_else(Task::none, window::drag),
+            Message::HideWindow => self
+                .window_id
+                .map_or_else(Task::none, |id| self.hide_window(id)),
+            Message::TogglePin => self.toggle_pin(),
             Message::PollTray => {
                 let clicked = loop {
                     match TrayIconEvent::receiver().try_recv() {
@@ -75,7 +118,54 @@ impl Closet {
                     Task::none()
                 }
             }
+            Message::RefreshAccountData => self.refresh_account_data(),
+            Message::BalanceLoaded(result) => {
+                self.balance_loading = false;
+                match result {
+                    Ok(balances) => {
+                        self.balances = Some(balances);
+                        self.balance_error = None;
+                    }
+                    Err(error) => {
+                        self.balances = None;
+                        self.balance_error = Some(error);
+                    }
+                }
+                Task::none()
+            }
+            Message::ValuationLoaded(result) => {
+                self.valuation_loading = false;
+                match result {
+                    Ok(valuations) => {
+                        self.asset_valuations = Some(valuations);
+                        self.valuation_error = None;
+                    }
+                    Err(error) => {
+                        self.asset_valuations = None;
+                        self.valuation_error = Some(error);
+                    }
+                }
+                Task::none()
+            }
         }
+    }
+
+    fn refresh_account_data(&mut self) -> Task<Message> {
+        let Some(okx) = self.drawers.iter().find_map(|drawer| match drawer {
+            drawer::Drawer::Okx(okx) => Some(okx.clone()),
+            drawer::Drawer::Text(_) => None,
+        }) else {
+            return Task::none();
+        };
+
+        self.balance_loading = true;
+        self.balance_error = None;
+        self.valuation_loading = true;
+        self.valuation_error = None;
+        Task::batch([
+            Task::perform(okx.clone().get_balance(), Message::BalanceLoaded),
+            Task::perform(okx.get_asset_valuation(), Message::ValuationLoaded),
+        ])
     }
 
     fn subscription(&self) -> Subscription<Message> {
@@ -98,9 +188,150 @@ impl Closet {
         ])
     }
 
+    fn hide_window(&mut self, id: window::Id) -> Task<Message> {
+        self.window_hidden = true;
+        window::set_mode(id, window::Mode::Hidden)
+    }
+
+    fn toggle_pin(&mut self) -> Task<Message> {
+        let Some(id) = self.window_id else {
+            return Task::none();
+        };
+
+        self.window_pinned = !self.window_pinned;
+        let level = if self.window_pinned {
+            window::Level::AlwaysOnTop
+        } else {
+            window::Level::Normal
+        };
+
+        window::set_level(id, level)
+    }
+
     fn view(&self) -> Element<'_, Message> {
-        let content = column!(iced::widget::text("hello!"));
-        center(content).padding(20).into()
+        let title_bar = row![
+            button("×").on_press(Message::HideWindow),
+            mouse_area(
+                container(text("Tie"))
+                    .width(Length::Fill)
+                    .height(Length::Fill)
+            )
+            .on_press(Message::DragWindow),
+            button(if self.window_pinned {
+                "取消置顶"
+            } else {
+                "置顶"
+            })
+            .on_press(Message::TogglePin),
+        ]
+        .height(40)
+        .padding(4)
+        .spacing(4);
+
+        let is_loading = self.balance_loading || self.valuation_loading;
+        let mut content = column![
+            text("OKX 账户余额"),
+            button(if is_loading {
+                "查询中..."
+            } else {
+                "刷新账户数据"
+            })
+            .on_press(Message::RefreshAccountData)
+        ];
+
+        if self.valuation_loading {
+            content = content.push(text("正在查询账户资产估值..."));
+        } else if let Some(error) = &self.valuation_error {
+            content = content.push(text(error));
+        } else if let Some(valuations) = &self.asset_valuations {
+            for valuation in valuations {
+                content = content.push(text(format!(
+                    "账户资产估值（USDT): {}",
+                    valuation.total_bal
+                )));
+            }
+        }
+
+        if self.balance_loading {
+            content = content.push(text("正在查询账户余额..."));
+        } else if let Some(error) = &self.balance_error {
+            content = content.push(text(error));
+        } else if let Some(accounts) = &self.balances {
+            for account in accounts {
+                content = content.push(text(format!("账户总权益: {}", account.total_eq)));
+                for balance in &account.details {
+                    content = content.push(text(format!(
+                        "{}: 持仓 {}, 可用 {}",
+                        balance.ccy, balance.eq, balance.avail_bal
+                    )));
+                }
+            }
+        }
+
+        column![title_bar, center(content).padding(20)]
+            .width(Length::Fill)
+            .height(Length::Fill)
+            .into()
+    }
+}
+
+fn load_drawers() -> Result<Vec<drawer::Drawer>, Box<dyn Error>> {
+    let path = std::env::current_exe()
+        .ok()
+        .and_then(|executable| bundled_config_path(&executable))
+        .unwrap_or_else(|| Path::new("conf/layout.toml").to_path_buf());
+    let contents = fs::read_to_string(&path).map_err(|error| {
+        io::Error::new(
+            error.kind(),
+            format!("failed to read {}: {error}", path.display()),
+        )
+    })?;
+    let layout: drawer::Layout = toml::from_str(&contents).map_err(|error| {
+        io::Error::new(
+            io::ErrorKind::InvalidData,
+            format!("failed to parse {}: {error}", path.display()),
+        )
+    })?;
+
+    Ok(layout.item)
+}
+
+fn bundled_config_path(executable: &Path) -> Option<PathBuf> {
+    let contents_dir = executable.parent()?.parent()?;
+    let app_bundle_dir = contents_dir.parent()?;
+    let is_app_bundle = contents_dir.file_name()? == "Contents"
+        && app_bundle_dir
+            .extension()
+            .is_some_and(|extension| extension == "app");
+
+    is_app_bundle.then(|| {
+        contents_dir
+            .join("Resources")
+            .join("conf")
+            .join("layout.toml")
+    })
+}
+
+#[cfg(test)]
+mod tests {
+    use super::{bundled_config_path, load_drawers};
+    use std::path::{Path, PathBuf};
+
+    #[test]
+    fn loads_drawers_from_config_file() {
+        let drawers = load_drawers().expect("conf/layout.toml should load");
+        assert!(!drawers.is_empty());
+    }
+
+    #[test]
+    fn resolves_config_inside_macos_app_bundle() {
+        let executable = Path::new("/Applications/Tie.app/Contents/MacOS/tie");
+        assert_eq!(
+            bundled_config_path(executable),
+            Some(PathBuf::from(
+                "/Applications/Tie.app/Contents/Resources/conf/layout.toml"
+            ))
+        );
     }
 }
 

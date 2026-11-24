@@ -5,6 +5,7 @@ A desktop application built with Iced.
 ## Features
 
 - Opens a single window displaying `hello!`
+- Uses a custom title bar with a toggle for keeping the window always on top
 - Adds a system tray icon; left-click it to hide or restore the window
 - Sets a custom macOS Dock icon
 - Cross-platform compatibility (macOS, Windows, Linux)
@@ -38,6 +39,18 @@ On Linux, building the system tray support requires GTK 3 and AppIndicator devel
 libraries (for example, `libgtk-3-dev` and `libappindicator3-dev` on Debian/Ubuntu).
 The Dock icon artwork is in `assets/tie-icon.svg`; the app embeds its rendered PNG.
 
+## Drawer layout
+
+At startup, the app reads `conf/layout.toml` relative to the current working directory
+and parses each `[[item]]` into a drawer. Use `conf/layout.example.toml` as a template.
+Supported item types are `okx` (with `apiKey`, `secretKey`, and the required OKX API
+`passphrase`) and `text` (with `content`). The real `conf/layout.toml` is git-ignored
+to help avoid committing API credentials.
+
+The app queries `GET /api/v5/account/balance` and `GET /api/v5/asset/asset-valuation`
+with `ccy=USDT` on startup and displays balances and the USDT-denominated asset
+valuation in the window. A missing or invalid config prevents the app from starting.
+
 ## Building for Release
 
 To create a release build:
@@ -55,8 +68,17 @@ Run the packaging script on macOS:
 sh scripts/package-macos.sh
 ```
 
-It creates `target/macos/Tie.app` with the app icon configured for Finder, Launchpad,
-and the Dock. You can launch it with:
+It copies `conf/layout.toml` into the app's `Contents/Resources/conf` directory.
+The app loads this bundled config when running from the `.app`; `cargo run` continues
+to load `conf/layout.toml` from the project directory.
+
+The config contains OKX API credentials in plaintext. Anyone who can inspect or copy
+the `.app` can retrieve them, so only bundle credentials for a private app you control;
+do not distribute that `.app`. For a distributable app, keep credentials outside the
+bundle and load them from a per-user config or secure storage.
+
+The package script creates `target/macos/Tie.app` with its icon configured for Finder,
+Launchpad, and the Dock. You can launch it with:
 
 ```bash
 open target/macos/Tie.app

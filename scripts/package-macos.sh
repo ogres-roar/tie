@@ -4,17 +4,26 @@ set -eu
 ROOT_DIR=$(CDPATH= cd -- "$(dirname -- "$0")/.." && pwd)
 cd "$ROOT_DIR"
 
+CONFIG_FILE="$ROOT_DIR/conf/layout.toml"
+if [ ! -f "$CONFIG_FILE" ]; then
+    printf 'Missing %s; copy conf/layout.example.toml and configure it first.\n' "$CONFIG_FILE" >&2
+    exit 1
+fi
+
 APP_DIR="$ROOT_DIR/target/macos/Tie.app"
 CONTENTS_DIR="$APP_DIR/Contents"
 MACOS_DIR="$CONTENTS_DIR/MacOS"
 RESOURCES_DIR="$CONTENTS_DIR/Resources"
 ICONSET_DIR="$ROOT_DIR/target/macos/Tie.iconset"
+CONFIG_RESOURCES_DIR="$RESOURCES_DIR/conf"
 
 cargo build --release
 
-mkdir -p "$MACOS_DIR" "$RESOURCES_DIR" "$ICONSET_DIR"
+mkdir -p "$MACOS_DIR" "$RESOURCES_DIR" "$ICONSET_DIR" "$CONFIG_RESOURCES_DIR"
 cp "$ROOT_DIR/target/release/tie" "$MACOS_DIR/tie"
 cp "$ROOT_DIR/packaging/macos/Info.plist" "$CONTENTS_DIR/Info.plist"
+cp "$CONFIG_FILE" "$CONFIG_RESOURCES_DIR/layout.toml"
+
 
 for size in 16 32 128 256 512; do
     sips -z "$size" "$size" "$ROOT_DIR/assets/tie-icon.png" \

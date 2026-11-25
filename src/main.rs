@@ -153,7 +153,19 @@ impl Closet {
             window::Level::Normal
         };
 
-        window::set_level(id, level)
+        let set_level = window::set_level(id, level);
+
+        #[cfg(target_os = "macos")]
+        let set_level = set_level.chain(
+            window::run(id, |handle| {
+                if let Err(error) = set_macos_window_space_behavior(handle) {
+                    eprintln!("Failed to configure macOS window Spaces behavior: {error}");
+                }
+            })
+            .then(|_| Task::<Message>::none()),
+        );
+
+        set_level
     }
 
     fn view(&self) -> Element<'_, Message> {
@@ -223,12 +235,41 @@ fn set_dock_icon() -> Result<(), &'static str> {
 }
 
 #[cfg(target_os = "macos")]
-fn activate_macos_app() -> Result<(), &'static str> {
-    use objc2::MainThreadMarker;
-    use objc2_app_kit::NSApplication;
+fn set_macos_window_space_behavior(handle: &dyn window::Window) -> Result<(), &'static str> {
+    use objc2::rc::Retained;
+    use objc2_app_kit::{NSView, NSWindowCollectionBehavior};
+    use window::raw_window_handle::RawWindowHandle;
 
-    let main_thread = MainThreadMarker::new().ok_or("must be called on the main thread")?;
-    NSApplication::sharedApplication(main_thread).activate();
+    let handle = handle
+        .window_handle()
+        .map_err(|_| "failed to get the macOS window handle")?;
+    let RawWindowHandle::AppKit(handle) = handle.as_raw() else {
+        return Err("the window does not use the AppKit windowing system");
+    };
+    let view = unsafe { Retained::<NSView>::retain(handle.ns_view.as_ptr().cast()) }
+        .ok_or("failed to retain the macOS window view")?;
+    let window = view
+        .window()
+        .ok_or("the macOS window view is not attached to a window")?;
+
+    let behavior = window.collectionBehavior();
+    let space_behavior = NSWindowCollectionBehavior::Managed
+        | NSWindowCollectionBehavior::Transient
+        | NSWindowCollectionBehavior::Stationary;
+    window
+        .setCollectionBehavior((behavior & !space_behavior) | NSWindowCollectionBehavior::Managed);
+
+    Ok(())
+}
+
+#[cfg(target_os = "macos")]
+fn activate_macos_app() -> Result<(), &'static str> {
+    use objc2_app_kit::{NSApplicationActivationOptions, NSRunningApplication};
+
+    let options = NSApplicationActivationOptions::ActivateAllWindows;
+    if !NSRunningApplication::currentApplication().activateWithOptions(options) {
+        return Err("macOS did not activate the application");
+    }
 
     Ok(())
 }

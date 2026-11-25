@@ -105,7 +105,7 @@ impl Closet {
                     }
                 };
 
-                if clicked && self.window_hidden {
+                if clicked {
                     self.show_window()
                 } else {
                     Task::none()
@@ -156,10 +156,19 @@ impl Closet {
         };
 
         self.window_hidden = false;
-        Task::batch([
-            window::set_mode(id, window::Mode::Windowed),
-            window::gain_focus(id),
-        ])
+        let show_window = window::set_mode(id, window::Mode::Windowed);
+
+        #[cfg(target_os = "macos")]
+        let show_window = show_window.chain(
+            window::run(id, |_| {
+                if let Err(error) = activate_macos_app() {
+                    eprintln!("Failed to activate macOS app: {error}");
+                }
+            })
+            .then(|_| Task::<Message>::none()),
+        );
+
+        show_window.chain(window::gain_focus(id))
     }
 
     fn hide_window(&mut self, id: window::Id) -> Task<Message> {
@@ -345,6 +354,17 @@ fn set_dock_icon() -> Result<(), &'static str> {
     unsafe {
         NSApplication::sharedApplication(main_thread).setApplicationIconImage(Some(&image));
     }
+
+    Ok(())
+}
+
+#[cfg(target_os = "macos")]
+fn activate_macos_app() -> Result<(), &'static str> {
+    use objc2::MainThreadMarker;
+    use objc2_app_kit::NSApplication;
+
+    let main_thread = MainThreadMarker::new().ok_or("must be called on the main thread")?;
+    NSApplication::sharedApplication(main_thread).activate();
 
     Ok(())
 }

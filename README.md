@@ -6,7 +6,7 @@ A desktop application built with Iced.
 
 - Opens a single window displaying `hello!`
 - Uses a custom title bar with a toggle for keeping the window always on top
-- Adds a system tray icon; left-click it to hide or restore the window
+- Adds a system tray icon; left-click it to restore the window and return to its desktop
 - Sets a custom macOS Dock icon
 - Cross-platform compatibility (macOS, Windows, Linux)
 

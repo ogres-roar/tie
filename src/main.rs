@@ -1,26 +1,24 @@
 mod drawer;
 
 use std::error::Error;
-use std::fs;
-use std::io;
-use std::path::{Path, PathBuf};
 use std::sync::Arc;
 use std::time::Duration;
 
-use iced::widget::{button, center, column, container, mouse_area, row, text};
+use iced::widget::{button, column, container, mouse_area, row, text};
 use iced::{Element, Length, Size, Subscription, Task, time, window};
 use tray_icon::{Icon, MouseButton, MouseButtonState, TrayIcon, TrayIconBuilder, TrayIconEvent};
 
 pub fn main() -> Result<(), Box<dyn Error>> {
-    let drawers: Arc<[drawer::Drawer]> = load_drawers()?.into();
+    let drawers = drawer::load()?;
 
     iced::application(
-        move || Closet::new(Arc::clone(&drawers)),
+        move || Closet::new(drawers.clone()),
         Closet::update,
         Closet::view,
     )
     .title("Tie")
     .window_size(Size::new(300.0, 500.0))
+    .theme(|_: &Closet| iced::Theme::Dark)
     .decorations(false)
     .exit_on_close_request(false)
     .subscription(Closet::subscription)
@@ -34,10 +32,7 @@ struct Closet {
     tray_icon: Option<TrayIcon>,
     window_hidden: bool,
     window_pinned: bool,
-    drawers: Arc<[drawer::Drawer]>,
-    balances: Option<Vec<drawer::AccountBalance>>,
-    balance_error: Option<String>,
-    balance_loading: bool,
+    drawers: drawer::Manager,
 }
 
 #[derive(Debug, Clone)]
@@ -45,11 +40,10 @@ enum Message {
     WindowOpened(window::Id),
     CloseRequested(window::Id),
     PollTray,
-    RefreshAccountData,
     DragWindow,
     HideWindow,
     TogglePin,
-    BalanceLoaded(Result<Vec<drawer::AccountBalance>, String>),
+    Drawer(drawer::Message),
 }
 
 impl Closet {
@@ -59,10 +53,7 @@ impl Closet {
             tray_icon: None,
             window_hidden: false,
             window_pinned: false,
-            drawers,
-            balances: None,
-            balance_error: None,
-            balance_loading: false,
+            drawers: drawer::Manager::new(drawers),
         }
     }
 
@@ -83,7 +74,7 @@ impl Closet {
                     }
                 }
 
-                self.refresh_account_data()
+                self.drawers.refresh().map(Message::Drawer)
             }
             Message::CloseRequested(id) if Some(id) == self.window_id => self.hide_window(id),
             Message::CloseRequested(_) => Task::none(),
@@ -111,35 +102,8 @@ impl Closet {
                     Task::none()
                 }
             }
-            Message::RefreshAccountData => self.refresh_account_data(),
-            Message::BalanceLoaded(result) => {
-                self.balance_loading = false;
-                match result {
-                    Ok(balances) => {
-                        self.balances = Some(balances);
-                        self.balance_error = None;
-                    }
-                    Err(error) => {
-                        self.balances = None;
-                        self.balance_error = Some(error);
-                    }
-                }
-                Task::none()
-            }
+            Message::Drawer(message) => self.drawers.update(message).map(Message::Drawer),
         }
-    }
-
-    fn refresh_account_data(&mut self) -> Task<Message> {
-        let Some(okx) = self.drawers.iter().find_map(|drawer| match drawer {
-            drawer::Drawer::Okx(okx) => Some(okx.clone()),
-            drawer::Drawer::Text(_) => None,
-        }) else {
-            return Task::none();
-        };
-
-        self.balance_loading = true;
-        self.balance_error = None;
-        Task::perform(okx.get_balance(), Message::BalanceLoaded)
     }
 
     fn subscription(&self) -> Subscription<Message> {
@@ -147,6 +111,7 @@ impl Closet {
             window::open_events().map(Message::WindowOpened),
             window::close_requests().map(Message::CloseRequested),
             time::every(Duration::from_millis(100)).map(|_| Message::PollTray),
+            self.drawers.subscription().map(Message::Drawer),
         ])
     }
 
@@ -211,111 +176,10 @@ impl Closet {
         .padding(4)
         .spacing(4);
 
-        let mut content = column![
-            text("OKX 账户余额"),
-            button(if self.balance_loading {
-                "查询中..."
-            } else {
-                "刷新账户数据"
-            })
-            .on_press(Message::RefreshAccountData)
-        ];
-
-        if self.balance_loading {
-            content = content.push(text("正在查询账户余额..."));
-        } else if let Some(error) = &self.balance_error {
-            content = content.push(text(error));
-        } else if let Some(accounts) = &self.balances {
-            for account in accounts {
-                match account.total_eq.parse::<f64>() {
-                    Ok(total_eq) if total_eq.is_finite() => {
-                        content = content.push(text(format!("账户总余额 (USD): {total_eq:.2}")));
-                    }
-                    Ok(_) => {
-                        content = content.push(text("账户总余额格式无效"));
-                    }
-                    Err(error) => {
-                        content = content.push(text(format!("无法解析账户总余额: {error}")));
-                    }
-                }
-
-                for balance in &account.details {
-                    match balance.spot_price_usd() {
-                        Ok(Some(price)) => {
-                            content = content
-                                .push(text(format!("{} 现货价格 (USD): {price:.2}", balance.ccy)));
-                        }
-                        Ok(None) => {}
-                        Err(error) => content = content.push(text(error)),
-                    }
-                }
-            }
-        }
-
-        column![title_bar, center(content).padding(20)]
+        column![title_bar, self.drawers.view().map(Message::Drawer)]
             .width(Length::Fill)
             .height(Length::Fill)
             .into()
-    }
-}
-
-fn load_drawers() -> Result<Vec<drawer::Drawer>, Box<dyn Error>> {
-    let path = std::env::current_exe()
-        .ok()
-        .and_then(|executable| bundled_config_path(&executable))
-        .unwrap_or_else(|| Path::new("conf/layout.toml").to_path_buf());
-    let contents = fs::read_to_string(&path).map_err(|error| {
-        io::Error::new(
-            error.kind(),
-            format!("failed to read {}: {error}", path.display()),
-        )
-    })?;
-    let layout: drawer::Layout = toml::from_str(&contents).map_err(|error| {
-        io::Error::new(
-            io::ErrorKind::InvalidData,
-            format!("failed to parse {}: {error}", path.display()),
-        )
-    })?;
-
-    Ok(layout.item)
-}
-
-fn bundled_config_path(executable: &Path) -> Option<PathBuf> {
-    let contents_dir = executable.parent()?.parent()?;
-    let app_bundle_dir = contents_dir.parent()?;
-    let is_app_bundle = contents_dir.file_name()? == "Contents"
-        && app_bundle_dir
-            .extension()
-            .is_some_and(|extension| extension == "app");
-
-    is_app_bundle.then(|| {
-        contents_dir
-            .join("Resources")
-            .join("conf")
-            .join("layout.toml")
-    })
-}
-
-#[cfg(test)]
-mod tests {
-    use super::{bundled_config_path, load_drawers};
-    use std::path::{Path, PathBuf};
-
-    #[test]
-    fn loads_drawers_from_config_file() {
-        let drawers = load_drawers().expect("conf/layout.toml should load");
-        assert!(!drawers.is_empty());
-    }
-
-    #[test]
-    fn resolves_config_inside_macos_app_bundle() {
-        let executable = Path::new("/Applications/Tie.app/Contents/MacOS/tie");
-        assert_eq!(
-            bundled_config_path(executable),
-            Some(PathBuf::from(
-                "/Applications/Tie.app/Contents/Resources/conf/layout.toml"
-            ))
-        );
     }
 }
 

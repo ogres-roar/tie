@@ -47,9 +47,11 @@ Supported item types are `okx` (with `apiKey`, `secretKey`, and the required OKX
 `passphrase`) and `text` (with `content`). The real `conf/layout.toml` is git-ignored
 to help avoid committing API credentials.
 
-The app queries `GET /api/v5/account/balance` with `ccy=USDT` on startup. It displays
-the account's total equity in USD and the USD spot price for each asset whose USD
-equity exceeds 1 USD. A missing or invalid config prevents the app from starting.
+The app queries `GET /api/v5/account/balance` on startup and every five seconds. It
+displays the account's total equity in USD and the USD spot price for each asset whose
+USD equity exceeds 1 USD, along with the time of the last successful refresh. Failed
+refreshes leave the last successful result visible. A missing or invalid config
+prevents the app from starting.
 
 ## Building for Release
 

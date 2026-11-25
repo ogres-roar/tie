@@ -1,9 +1,10 @@
+mod home;
 mod okx;
 mod text;
 
 pub use okx::AccountBalance;
 
-use iced::widget::{Space, column, container, row, scrollable, text as iced_text};
+use iced::widget::{Space, button, column, container, row, scrollable, text as iced_text};
 use iced::{Background, Border, Color, Element, Length, Subscription, Task, time};
 use serde::Deserialize;
 use std::collections::BTreeMap;
@@ -16,6 +17,7 @@ use std::time::Duration;
 
 const DRAWER_HEIGHT: f32 = 160.0;
 const MAX_VISIBLE_PRICES: usize = 3;
+const HOME_REFRESH_INTERVAL: Duration = Duration::from_secs(10);
 
 #[derive(Deserialize)]
 pub struct Layout {
@@ -27,12 +29,16 @@ pub struct Layout {
 pub enum Drawer {
     Okx(okx::Okx),
     Text(text::Text),
+    Home(home::Home),
 }
 
 #[derive(Debug, Clone)]
 pub enum Message {
     Refresh,
     BalanceLoaded(u64, Result<Vec<AccountBalance>, String>),
+    HomeRefresh,
+    HomeLoaded(u64, Result<home::HomeContent, String>),
+    CopyHomeCommand(String),
     RotatePrices,
 }
 
@@ -44,6 +50,9 @@ pub struct Manager {
     last_balance_refresh: Option<String>,
     balance_error: Option<String>,
     balance_refresh_id: u64,
+    home_content: Option<home::HomeContent>,
+    home_error: Option<String>,
+    home_refresh_id: u64,
 }
 
 impl Manager {
@@ -56,12 +65,15 @@ impl Manager {
             last_balance_refresh: None,
             balance_error: None,
             balance_refresh_id: 0,
+            home_content: None,
+            home_error: None,
+            home_refresh_id: 0,
         }
     }
 
     pub fn update(&mut self, message: Message) -> Task<Message> {
         match message {
-            Message::Refresh => self.refresh(),
+            Message::Refresh => self.refresh_okx(),
             Message::BalanceLoaded(refresh_id, result) => {
                 if refresh_id != self.balance_refresh_id {
                     return Task::none();
@@ -81,6 +93,26 @@ impl Manager {
                 }
                 Task::none()
             }
+            Message::HomeRefresh => self.refresh_home(),
+            Message::HomeLoaded(refresh_id, result) => {
+                if refresh_id != self.home_refresh_id {
+                    return Task::none();
+                }
+
+                match result {
+                    Ok(content) => {
+                        if self.home_content.as_ref() != Some(&content) {
+                            self.home_content = Some(content);
+                        }
+                        self.home_error = None;
+                    }
+                    Err(error) => {
+                        self.home_error = Some(error);
+                    }
+                }
+                Task::none()
+            }
+            Message::CopyHomeCommand(command) => iced::clipboard::write(command),
             Message::RotatePrices => {
                 if self.prices.len() > MAX_VISIBLE_PRICES {
                     self.price_rotation_index = (self.price_rotation_index + 1) % self.prices.len();
@@ -91,9 +123,13 @@ impl Manager {
     }
 
     pub fn refresh(&mut self) -> Task<Message> {
+        Task::batch([self.refresh_okx(), self.refresh_home()])
+    }
+
+    fn refresh_okx(&mut self) -> Task<Message> {
         let Some(okx) = self.items.iter().find_map(|drawer| match drawer {
             Drawer::Okx(okx) => Some(okx.clone()),
-            Drawer::Text(_) => None,
+            Drawer::Text(_) | Drawer::Home(_) => None,
         }) else {
             return Task::none();
         };
@@ -105,8 +141,30 @@ impl Manager {
         })
     }
 
+    fn refresh_home(&mut self) -> Task<Message> {
+        let Some(home) = self.items.iter().find_map(|drawer| match drawer {
+            Drawer::Home(home) => Some(home.clone()),
+            Drawer::Okx(_) | Drawer::Text(_) => None,
+        }) else {
+            return Task::none();
+        };
+
+        self.home_refresh_id = self.home_refresh_id.wrapping_add(1);
+        let refresh_id = self.home_refresh_id;
+        Task::perform(home.fetch(), move |result| {
+            Message::HomeLoaded(refresh_id, result)
+        })
+    }
+
     pub fn subscription(&self) -> Subscription<Message> {
         let mut subscriptions = vec![time::every(Duration::from_secs(5)).map(|_| Message::Refresh)];
+        if self
+            .items
+            .iter()
+            .any(|drawer| matches!(drawer, Drawer::Home(_)))
+        {
+            subscriptions.push(time::every(HOME_REFRESH_INTERVAL).map(|_| Message::HomeRefresh));
+        }
         if self.prices.len() > MAX_VISIBLE_PRICES {
             subscriptions.push(time::every(Duration::from_secs(2)).map(|_| Message::RotatePrices));
         }
@@ -163,6 +221,9 @@ impl Manager {
                 Drawer::Text(value) => {
                     drawer_card(container(iced_text(value.content()).size(24)).center(Length::Fill))
                 }
+                Drawer::Home(_) => {
+                    home_card(self.home_content.as_ref(), self.home_error.as_deref())
+                }
             };
             drawers = drawers.push(card);
         }
@@ -189,10 +250,80 @@ impl Manager {
     }
 }
 
+fn home_card<'a>(
+    content: Option<&'a home::HomeContent>,
+    error: Option<&'a str>,
+) -> Element<'a, Message> {
+    let title = content.map_or("Home", |content| content.title.as_str());
+    let mut card = column![iced_text(title).size(20)].spacing(8);
+
+    if let Some(error) = error {
+        card = card.push(iced_text(error).size(12));
+    }
+
+    match content {
+        Some(content) if content.lines.is_empty() => {
+            card = card.push(iced_text("页面暂无文字内容").size(14));
+        }
+        Some(content) => {
+            for command in &content.lines {
+                card = card.push(home_command(command));
+            }
+        }
+        None if error.is_none() => {
+            card = card.push(iced_text("正在获取 Notion 页面").size(14));
+        }
+        None => {}
+    }
+
+    drawer_card_with_height(card, Length::Shrink)
+}
+
+fn home_command(command: &str) -> Element<'_, Message> {
+    button(row![
+        container(
+            iced_text(command)
+                .size(12)
+                .wrapping(iced::widget::text::Wrapping::None)
+                .width(Length::Fill),
+        )
+        .width(Length::Fill)
+        .clip(true),
+        iced_text("复制").size(12),
+    ])
+    .width(Length::Fill)
+    .padding([6, 8])
+    .style(|_, status| {
+        let background = match status {
+            button::Status::Hovered => Color::from_rgb8(64, 64, 64),
+            button::Status::Pressed => Color::from_rgb8(48, 48, 48),
+            _ => Color::from_rgb8(40, 40, 40),
+        };
+        button::Style {
+            text_color: Color::WHITE,
+            background: Some(Background::Color(background)),
+            border: Border::default()
+                .color(Color::from_rgb8(96, 96, 96))
+                .width(1.0)
+                .rounded(6.0),
+            ..Default::default()
+        }
+    })
+    .on_press(Message::CopyHomeCommand(command.to_owned()))
+    .into()
+}
+
 fn drawer_card<'a>(content: impl Into<Element<'a, Message>>) -> Element<'a, Message> {
+    drawer_card_with_height(content, DRAWER_HEIGHT)
+}
+
+fn drawer_card_with_height<'a>(
+    content: impl Into<Element<'a, Message>>,
+    height: impl Into<Length>,
+) -> Element<'a, Message> {
     container(content)
         .width(Length::Fill)
-        .height(DRAWER_HEIGHT)
+        .height(height)
         .padding(16)
         .style(|_| container::Style {
             text_color: Some(Color::WHITE),
@@ -310,6 +441,23 @@ mod tests {
             Some("2026-11-25 13:00:00")
         );
         assert_eq!(manager.balance_error.as_deref(), Some("request failed"));
+    }
+
+    #[test]
+    fn changed_home_content_replaces_the_previous_result() {
+        let mut manager = Manager::new(Vec::new().into());
+        manager.home_content = Some(super::home::HomeContent {
+            title: "Home".to_owned(),
+            lines: vec!["ssh old-host".to_owned()],
+        });
+        let updated_content = super::home::HomeContent {
+            title: "Home".to_owned(),
+            lines: vec!["ssh new-host".to_owned()],
+        };
+
+        let _task = manager.update(Message::HomeLoaded(0, Ok(updated_content.clone())));
+
+        assert_eq!(manager.home_content.as_ref(), Some(&updated_content));
     }
 
     #[test]

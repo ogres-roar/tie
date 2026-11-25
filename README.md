@@ -42,10 +42,12 @@ The Dock icon artwork is in `assets/tie-icon.svg`; the app embeds its rendered P
 ## Drawer layout
 
 At startup, the app reads `conf/layout.toml` relative to the current working directory
-and parses each `[[item]]` into a drawer. Use `conf/layout.example.toml` as a template.
+and parses each `[[item]]` into a drawer.
 Supported item types are `okx` (with `apiKey`, `secretKey`, and the required OKX API
-`passphrase`) and `text` (with `content`). The real `conf/layout.toml` is git-ignored
-to help avoid committing API credentials.
+`passphrase`), `text` (with `content`), and `home` (with a Notion integration API key
+in `notion`). The Home drawer reads the configured Notion page and refreshes it every
+10 seconds, updating the display only when the page content changes. The real
+`conf/layout.toml` is git-ignored to help avoid committing API credentials.
 
 The app queries `GET /api/v5/account/balance` on startup and every five seconds. It
 displays the account's total equity in USD and the USD spot price for each asset whose

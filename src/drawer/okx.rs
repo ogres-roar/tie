@@ -6,7 +6,6 @@ use sha2::Sha256;
 use std::time::Duration;
 
 const BALANCE_PATH: &str = "/api/v5/account/balance";
-const ASSET_VALUATION_PATH: &str = "/api/v5/asset/asset-valuation";
 const BASE_URL: &str = "https://openapi.okx.com";
 
 #[derive(Clone, Deserialize)]
@@ -30,7 +29,40 @@ pub struct AccountBalance {
 pub struct BalanceDetail {
     pub ccy: String,
     pub eq: String,
-    pub avail_bal: String,
+    pub eq_usd: String,
+}
+
+impl BalanceDetail {
+    pub fn spot_price_usd(&self) -> Result<Option<f64>, String> {
+        let eq_usd = self
+            .eq_usd
+            .parse::<f64>()
+            .map_err(|error| format!("could not parse {} USD equity: {error}", self.ccy))?;
+        if !eq_usd.is_finite() {
+            return Err(format!("invalid USD equity for {}", self.ccy));
+        }
+        if eq_usd <= 1.0 {
+            return Ok(None);
+        }
+
+        let eq = self
+            .eq
+            .parse::<f64>()
+            .map_err(|error| format!("could not parse {} balance: {error}", self.ccy))?;
+        if !eq.is_finite() || eq <= 0.0 {
+            return Err(format!(
+                "cannot calculate {} spot price from balance",
+                self.ccy
+            ));
+        }
+
+        let price = eq_usd / eq;
+        if !price.is_finite() {
+            return Err(format!("invalid {} spot price", self.ccy));
+        }
+
+        Ok(Some(price))
+    }
 }
 
 #[derive(Deserialize)]
@@ -41,30 +73,9 @@ struct ApiResponse<T> {
     data: Vec<T>,
 }
 
-#[allow(dead_code)]
-#[derive(Debug, Clone, Deserialize)]
-#[serde(rename_all = "camelCase")]
-pub struct AssetValuation {
-    pub total_bal: String,
-    pub details: AssetValuationDetails,
-}
-
-#[allow(dead_code)]
-#[derive(Debug, Clone, Deserialize)]
-pub struct AssetValuationDetails {
-    pub classic: String,
-    pub earn: String,
-    pub funding: String,
-    pub trading: String,
-}
-
 impl Okx {
     pub async fn get_balance(self) -> Result<Vec<AccountBalance>, String> {
         self.get(BALANCE_PATH, "balance").await
-    }
-
-    pub async fn get_asset_valuation(self) -> Result<Vec<AssetValuation>, String> {
-        self.get(ASSET_VALUATION_PATH, "asset valuation").await
     }
 
     async fn get<T: DeserializeOwned>(
@@ -79,7 +90,7 @@ impl Okx {
             );
         }
 
-        let request_path = format!("{path}?ccy=USDT");
+        let request_path = format!("{path}");
         let timestamp = Utc::now().to_rfc3339_opts(SecondsFormat::Millis, true);
         let prehash = format!("{timestamp}GET{request_path}");
         let mut mac = Hmac::<Sha256>::new_from_slice(self.secret_key.as_bytes())
@@ -119,30 +130,35 @@ impl Okx {
 
 #[cfg(test)]
 mod tests {
-    use super::{ApiResponse, AssetValuation};
+    use super::BalanceDetail;
 
     #[test]
-    fn parses_asset_valuation_response() {
-        let response: ApiResponse<AssetValuation> = serde_json::from_str(
-            r#"{
-                "code": "0",
-                "msg": "",
-                "data": [{
-                    "details": {
-                        "classic": "124.6",
-                        "earn": "1122.73",
-                        "funding": "0.09",
-                        "trading": "2544.28"
-                    },
-                    "totalBal": "3790.09",
-                    "ts": "1637566660769"
-                }]
-            }"#,
-        )
-        .expect("asset valuation response should parse");
+    fn computes_spot_price_for_assets_over_one_usd() {
+        let balance = BalanceDetail {
+            ccy: "BTC".to_owned(),
+            eq: "2".to_owned(),
+            eq_usd: "200".to_owned(),
+        };
+        assert_eq!(balance.spot_price_usd().unwrap(), Some(100.0));
+    }
 
-        assert_eq!(response.code, "0");
-        assert_eq!(response.data[0].total_bal, "3790.09");
-        assert_eq!(response.data[0].details.trading, "2544.28");
+    #[test]
+    fn omits_assets_valued_at_one_usd_or_less() {
+        let balance = BalanceDetail {
+            ccy: "BTC".to_owned(),
+            eq: "2".to_owned(),
+            eq_usd: "1".to_owned(),
+        };
+        assert_eq!(balance.spot_price_usd().unwrap(), None);
+    }
+
+    #[test]
+    fn rejects_zero_balance_when_calculating_price() {
+        let balance = BalanceDetail {
+            ccy: "BTC".to_owned(),
+            eq: "0".to_owned(),
+            eq_usd: "2".to_owned(),
+        };
+        assert!(balance.spot_price_usd().is_err());
     }
 }

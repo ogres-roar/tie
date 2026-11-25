@@ -4067,7 +4067,6 @@ dependencies = [
  "objc2-foundation 0.3.2",
  "reqwest",
  "serde",
- "serde_json",
  "sha2",
  "toml 0.9.12+spec-1.1.0",
  "tray-icon",

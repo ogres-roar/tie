@@ -38,9 +38,6 @@ struct Closet {
     balances: Option<Vec<drawer::AccountBalance>>,
     balance_error: Option<String>,
     balance_loading: bool,
-    asset_valuations: Option<Vec<drawer::AssetValuation>>,
-    valuation_error: Option<String>,
-    valuation_loading: bool,
 }
 
 #[derive(Debug, Clone)]
@@ -53,7 +50,6 @@ enum Message {
     HideWindow,
     TogglePin,
     BalanceLoaded(Result<Vec<drawer::AccountBalance>, String>),
-    ValuationLoaded(Result<Vec<drawer::AssetValuation>, String>),
 }
 
 impl Closet {
@@ -67,9 +63,6 @@ impl Closet {
             balances: None,
             balance_error: None,
             balance_loading: false,
-            asset_valuations: None,
-            valuation_error: None,
-            valuation_loading: false,
         }
     }
 
@@ -133,20 +126,6 @@ impl Closet {
                 }
                 Task::none()
             }
-            Message::ValuationLoaded(result) => {
-                self.valuation_loading = false;
-                match result {
-                    Ok(valuations) => {
-                        self.asset_valuations = Some(valuations);
-                        self.valuation_error = None;
-                    }
-                    Err(error) => {
-                        self.asset_valuations = None;
-                        self.valuation_error = Some(error);
-                    }
-                }
-                Task::none()
-            }
         }
     }
 
@@ -160,12 +139,7 @@ impl Closet {
 
         self.balance_loading = true;
         self.balance_error = None;
-        self.valuation_loading = true;
-        self.valuation_error = None;
-        Task::batch([
-            Task::perform(okx.clone().get_balance(), Message::BalanceLoaded),
-            Task::perform(okx.get_asset_valuation(), Message::ValuationLoaded),
-        ])
+        Task::perform(okx.get_balance(), Message::BalanceLoaded)
     }
 
     fn subscription(&self) -> Subscription<Message> {
@@ -228,10 +202,9 @@ impl Closet {
         .padding(4)
         .spacing(4);
 
-        let is_loading = self.balance_loading || self.valuation_loading;
         let mut content = column![
             text("OKX 账户余额"),
-            button(if is_loading {
+            button(if self.balance_loading {
                 "查询中..."
             } else {
                 "刷新账户数据"
@@ -239,31 +212,33 @@ impl Closet {
             .on_press(Message::RefreshAccountData)
         ];
 
-        if self.valuation_loading {
-            content = content.push(text("正在查询账户资产估值..."));
-        } else if let Some(error) = &self.valuation_error {
-            content = content.push(text(error));
-        } else if let Some(valuations) = &self.asset_valuations {
-            for valuation in valuations {
-                content = content.push(text(format!(
-                    "账户资产估值（USDT): {}",
-                    valuation.total_bal
-                )));
-            }
-        }
-
         if self.balance_loading {
             content = content.push(text("正在查询账户余额..."));
         } else if let Some(error) = &self.balance_error {
             content = content.push(text(error));
         } else if let Some(accounts) = &self.balances {
             for account in accounts {
-                content = content.push(text(format!("账户总权益: {}", account.total_eq)));
+                match account.total_eq.parse::<f64>() {
+                    Ok(total_eq) if total_eq.is_finite() => {
+                        content = content.push(text(format!("账户总余额 (USD): {total_eq:.2}")));
+                    }
+                    Ok(_) => {
+                        content = content.push(text("账户总余额格式无效"));
+                    }
+                    Err(error) => {
+                        content = content.push(text(format!("无法解析账户总余额: {error}")));
+                    }
+                }
+
                 for balance in &account.details {
-                    content = content.push(text(format!(
-                        "{}: 持仓 {}, 可用 {}",
-                        balance.ccy, balance.eq, balance.avail_bal
-                    )));
+                    match balance.spot_price_usd() {
+                        Ok(Some(price)) => {
+                            content = content
+                                .push(text(format!("{} 现货价格 (USD): {price:.2}", balance.ccy)));
+                        }
+                        Ok(None) => {}
+                        Err(error) => content = content.push(text(error)),
+                    }
                 }
             }
         }

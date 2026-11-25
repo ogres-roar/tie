@@ -1,7 +1,7 @@
 mod okx;
 mod text;
 
-pub use okx::{AccountBalance, AssetValuation};
+pub use okx::AccountBalance;
 
 use serde::Deserialize;
 
